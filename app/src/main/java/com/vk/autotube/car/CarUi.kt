@@ -6,6 +6,9 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -110,6 +113,22 @@ class CarUi(
     // Driving
     private val drivingCover = LinearLayout(ctx)
     private val drivingPlay = ImageView(ctx)
+
+    // Audio focus: tells Android (and so Android Auto) that AutoTube is the media
+    // playing now, so other music apps like Spotify pause instead of covering it.
+    private val audioManager: AudioManager? = ctx.getSystemService(AudioManager::class.java)
+    private var hasFocus = false
+    private val focusRequest: AudioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                .build()
+        )
+        .setOnAudioFocusChangeListener { change ->
+            if (change == AudioManager.AUDIOFOCUS_LOSS) hasFocus = false
+        }
+        .build()
 
     private val libraryListener: () -> Unit = {
         if (!destroyed) {
@@ -265,6 +284,7 @@ class CarUi(
 
     fun destroy() {
         if (destroyed) return
+        abandonAudioFocus()
         destroyed = true
         handler.removeCallbacksAndMessages(null)
         Library.removeListener(libraryListener)
@@ -288,10 +308,12 @@ class CarUi(
         tapCatcher.visibility = if (m == Mode.WATCH) View.VISIBLE else View.GONE
         applyWebLayout()
         if (m == Mode.WATCH) {
+            requestAudioFocus()
             showControls()
             handler.removeCallbacks(poll)
             handler.post(poll)
         } else {
+            abandonAudioFocus()
             hideControlsNow()
             handler.removeCallbacks(poll)
         }
@@ -733,8 +755,21 @@ class CarUi(
         controls.visibility = View.GONE
     }
 
+    private fun requestAudioFocus() {
+        if (hasFocus) return
+        val result = audioManager?.requestAudioFocus(focusRequest)
+        hasFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        if (!hasFocus) return
+        audioManager?.abandonAudioFocusRequest(focusRequest)
+        hasFocus = false
+    }
+
     private fun toggle() {
         paused = !paused
+        if (!paused) requestAudioFocus()
         setPausedIcon()
         js("window.__at.toggle()")
         if (paused) showControls() else scheduleHide()
@@ -892,6 +927,21 @@ class CarUi(
     var p = v ? v.parentElement : null;
     while (p && p !== document.documentElement) { p.classList.add('at-chain'); p = p.parentElement; }
   }
+  // YouTube autoplays muted when there was no finger tap, and re-mutes the
+  // element itself. Unmute through its own player API and keep it unmuted.
+  function unmute(v) {
+    var mp = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+    try {
+      if (mp && mp.isMuted && mp.isMuted()) mp.unMute();
+      if (mp && mp.getVolume && mp.getVolume() < 5) mp.setVolume(100);
+    } catch (e) {}
+    if (v.muted) {
+      var b = document.querySelector('.ytp-unmute, button.ytp-unmute, .ytp-unmute-inner');
+      if (b) { try { b.click(); } catch (e) {} }
+      v.muted = false;
+    }
+    if (v.volume === 0) v.volume = 1;
+  }
   function skipButton() {
     return document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot button');
   }
@@ -905,9 +955,9 @@ class CarUi(
       var v = vid();
       if (!v) return;
       chain(v);
+      unmute(v);
       if (!v.__atStarted) {
         v.__atStarted = true;
-        v.muted = false;
         if (v.paused) { var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); }
       }
     },
@@ -926,12 +976,13 @@ class CarUi(
         title: document.title
       });
     },
-    toggle: function() { var v = vid(); if (!v) return; if (v.paused) { v.play(); } else { v.pause(); } },
+    toggle: function() { var v = vid(); if (!v) return; if (v.paused) { unmute(v); v.play(); } else { v.pause(); } },
+    pause: function() { var v = vid(); if (v) v.pause(); },
     seek: function(s) { var v = vid(); if (v) v.currentTime = Math.max(0, (v.currentTime || 0) + s); },
     seekTo: function(f) { var v = vid(); if (v && isFinite(v.duration)) v.currentTime = f * v.duration; },
     skip: function() { var b = skipButton(); if (b) b.click(); }
   };
-  setInterval(function(){ window.__at.apply(); }, 1000);
+  setInterval(function(){ window.__at.apply(); }, 500);
 })();
 """
     }
