@@ -23,39 +23,45 @@ class AutoTubeCarService : CarAppService() {
 
 class AutoTubeSession : Session() {
     override fun onCreateScreen(intent: Intent): Screen {
-        val renderer = SplitRenderer(carContext)
+        val renderer = CarRenderer(carContext)
         lifecycle.addObserver(renderer)
         return MainScreen(carContext, renderer)
     }
 }
 
 /**
- * The navigation template gives us a raw drawing surface. Buttons:
- * top strip = Back / Home for the video side, map strip = page up / down / pan.
+ * The navigation template only gives us the raw surface plus a few Android Auto
+ * buttons in the corner. The buttons change with what's on screen.
  */
-class MainScreen(ctx: CarContext, private val renderer: SplitRenderer) : Screen(ctx) {
+class MainScreen(ctx: CarContext, private val renderer: CarRenderer) : Screen(ctx) {
+
+    init {
+        renderer.onModeChanged = { invalidate() }
+    }
 
     override fun onGetTemplate(): Template {
+        val mode = renderer.mode
         val strip = ActionStrip.Builder()
-            .addAction(
-                Action.Builder().setTitle("Back").setOnClickListener { renderer.goBack() }.build()
-            )
-            .addAction(
-                Action.Builder().setTitle("Home").setOnClickListener { renderer.goHome() }.build()
-            )
-            .build()
+        when (mode) {
+            CarUi.Mode.HOME -> strip.addAction(iconAction(R.drawable.ic_search) { renderer.browse() })
+            CarUi.Mode.WEB -> {
+                strip.addAction(iconAction(R.drawable.ic_back) { renderer.back() })
+                strip.addAction(iconAction(R.drawable.ic_home) { renderer.home() })
+            }
+            CarUi.Mode.WATCH -> strip.addAction(iconAction(R.drawable.ic_home) { renderer.home() })
+        }
 
-        val mapStrip = ActionStrip.Builder()
-            .addAction(iconAction(R.drawable.ic_up) { renderer.scrollPage(-1) })
-            .addAction(iconAction(R.drawable.ic_down) { renderer.scrollPage(1) })
-            .addAction(Action.PAN)
-            .build()
-
-        return NavigationTemplate.Builder()
-            .setActionStrip(strip)
-            .setMapActionStrip(mapStrip)
-            .setPanModeListener { }
-            .build()
+        val builder = NavigationTemplate.Builder().setActionStrip(strip.build())
+        if (mode != CarUi.Mode.WATCH) {
+            val mapStrip = ActionStrip.Builder()
+                .addAction(iconAction(R.drawable.ic_up) { renderer.page(-1) })
+                .addAction(iconAction(R.drawable.ic_down) { renderer.page(1) })
+                .addAction(Action.PAN)
+                .build()
+            builder.setMapActionStrip(mapStrip)
+            builder.setPanModeListener { }
+        }
+        return builder.build()
     }
 
     private fun iconAction(res: Int, onClick: () -> Unit): Action {

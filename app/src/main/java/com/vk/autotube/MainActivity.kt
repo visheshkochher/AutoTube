@@ -7,164 +7,311 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
-import android.provider.Settings
-import android.util.TypedValue
+import android.text.InputType
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.inputmethod.EditorInfo
-import android.widget.Button
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
-import androidx.core.app.NotificationManagerCompat
-import kotlin.math.roundToInt
 
-/** Phone-side remote: permissions, search, and "share to car". */
+/** Phone side: search, paste or share a video, and it plays on the car screen. */
 class MainActivity : Activity() {
 
-    private lateinit var status: TextView
     private lateinit var input: EditText
+    private lateinit var recentsBox: LinearLayout
+    private lateinit var permCard: View
+
+    private val libraryListener: () -> Unit = { renderRecents() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Bridge.init(this)
+        Library.init(this)
+        window.decorView.setBackgroundColor(Palette.BG)
+        window.statusBarColor = Palette.BG
+        window.navigationBarColor = Palette.BG
         setContentView(buildUi())
-        handleIntent(intent)
+        Library.addListener(libraryListener)
+        renderRecents()
+        if (savedInstanceState == null) handleShare(intent)
+    }
+
+    override fun onDestroy() {
+        Library.removeListener(libraryListener)
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleIntent(intent)
+        setIntent(intent)
+        handleShare(intent)
     }
 
     override fun onResume() {
         super.onResume()
-        refreshStatus()
+        refreshPermission()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        refreshStatus()
+        refreshPermission()
     }
 
-    private fun handleIntent(i: Intent?) {
+    // ------------------------------------------------------------------
+    // Actions
+    // ------------------------------------------------------------------
+
+    private fun handleShare(i: Intent?) {
         if (i?.action != Intent.ACTION_SEND) return
         val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
-        send(text)
+        dispatch(Bridge.parse(text))
+        // Go straight back to YouTube after sharing.
+        finish()
     }
 
-    private fun send(text: String) {
-        val url = Bridge.youtubeUrlFrom(text)
-        Bridge.open(this, url)
-        Toast.makeText(this, "Sent to car", Toast.LENGTH_SHORT).show()
+    private fun submit() {
+        val text = input.text.toString()
+        if (text.isBlank()) return
+        dispatch(Bridge.parse(text))
+        input.setText("")
+        getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(input.windowToken, 0)
+    }
+
+    private fun pasteLink() {
+        val cm = getSystemService(ClipboardManager::class.java)
+        val clip = cm?.primaryClip
+        val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this)?.toString() else null
+        if (text.isNullOrBlank()) {
+            toast("Clipboard is empty")
+        } else {
+            dispatch(Bridge.parse(text))
+        }
+    }
+
+    private fun dispatch(cmd: CarCommand) {
+        if (cmd is CarCommand.Play) Library.add(this, cmd.videoId)
+        Bridge.send(cmd)
+        val msg = when (cmd) {
+            is CarCommand.Play -> "Playing on your car"
+            is CarCommand.Browse -> "Opened on your car"
+            is CarCommand.Home -> "Car screen is back home"
+        }
+        toast(msg)
+    }
+
+    private fun toast(s: String) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
     }
 
     private fun hasLocation() =
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    private fun hasNotificationAccess() =
-        NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
-
-    private fun refreshStatus() {
-        if (!::status.isInitialized) return
-        val loc = if (hasLocation()) "On" else "Off (needed for the map and the driving lock)"
-        val turns = if (hasNotificationAccess()) "On" else "Off (needed to mirror Google Maps turns)"
-        status.text = "Location: $loc\nGoogle Maps turn info: $turns"
+    private fun refreshPermission() {
+        if (::permCard.isInitialized) permCard.visibility = if (hasLocation()) View.GONE else View.VISIBLE
     }
 
-    private fun buildUi(): ScrollView {
-        val pad = dp(20)
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, dp(56), pad, pad)
-        }
+    // ------------------------------------------------------------------
+    // Layout
+    // ------------------------------------------------------------------
 
-        col.addView(text("AutoTube", 28f, bold = true))
-        col.addView(text("YouTube next to your navigation on Android Auto. Video hides itself while the car is moving.", 15f, color = "#9AA4AE"))
-        col.addView(space(16))
+    private fun buildUi(): View {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(56), dp(20), dp(48))
 
-        status = text("", 15f, color = "#DDE3E8")
-        col.addView(status)
-        col.addView(space(12))
+        // Header
+        val header = LinearLayout(this)
+        header.orientation = LinearLayout.HORIZONTAL
+        header.gravity = Gravity.CENTER_VERTICAL
+        val logo = ImageView(this)
+        logo.setImageResource(R.drawable.ic_logo)
+        val logoLp = LinearLayout.LayoutParams(dp(46), dp(46))
+        logoLp.marginEnd = dp(14)
+        header.addView(logo, logoLp)
+        val titles = LinearLayout(this)
+        titles.orientation = LinearLayout.VERTICAL
+        titles.addView(label("AutoTube", 28f, Palette.TEXT, 800))
+        titles.addView(label("YouTube on your car screen", 14f, Palette.MUTED))
+        header.addView(titles)
+        col.addView(header)
 
-        col.addView(button("1. Allow location") {
-            requestPermissions(
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 1
-            )
-        })
-        col.addView(button("2. Allow Google Maps turn info") {
-            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-        })
-        col.addView(space(20))
+        // Location permission
+        permCard = buildPermCard()
+        col.addView(permCard, lp(MATCH_PARENT, WRAP_CONTENT, top = 22))
 
-        input = EditText(this).apply {
-            hint = "Search YouTube or paste a link"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.parseColor("#7A848E"))
-            setSingleLine(true)
-            imeOptions = EditorInfo.IME_ACTION_GO
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_GO) {
-                    send(text.toString()); true
-                } else false
-            }
-        }
-        col.addView(input, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        col.addView(button("Play on car") { send(input.text.toString()) })
-        col.addView(button("Paste link from clipboard") {
-            val cm = getSystemService(ClipboardManager::class.java)
-            val clip = cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
-            if (clip.isNullOrBlank()) {
-                Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+        // Search
+        val search = LinearLayout(this)
+        search.orientation = LinearLayout.HORIZONTAL
+        search.gravity = Gravity.CENTER_VERTICAL
+        search.background = rounded(Palette.SURFACE, dpf(30f))
+        search.setPadding(dp(18), dp(6), dp(6), dp(6))
+
+        val searchIcon = ImageView(this)
+        searchIcon.setImageResource(R.drawable.ic_search)
+        searchIcon.alpha = 0.7f
+        search.addView(searchIcon, LinearLayout.LayoutParams(dp(22), dp(22)))
+
+        input = EditText(this)
+        input.background = null
+        input.hint = "Search YouTube or paste a link"
+        input.setHintTextColor(Palette.MUTED)
+        input.setTextColor(Palette.TEXT)
+        input.textSize = 16f
+        input.setSingleLine(true)
+        input.inputType = InputType.TYPE_CLASS_TEXT
+        input.imeOptions = EditorInfo.IME_ACTION_SEARCH
+        input.setPadding(dp(12), dp(12), dp(8), dp(12))
+        input.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                submit()
+                true
             } else {
-                send(clip)
+                false
             }
-        })
-        col.addView(button("YouTube home on car") { Bridge.open(this, Bridge.HOME) })
-        col.addView(space(24))
+        }
+        search.addView(input, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        col.addView(text("Tip: in the YouTube app, tap Share on any video and pick AutoTube.", 14f, color = "#9AA4AE"))
-        col.addView(space(16))
-        col.addView(text("Car setup (once)", 17f, bold = true))
+        val go = ImageView(this)
+        go.setImageResource(R.drawable.ic_play)
+        go.background = pressable(circle(Palette.ACCENT))
+        val pad = dp(11)
+        go.setPadding(pad, pad, pad, pad)
+        go.isClickable = true
+        go.setOnClickListener { submit() }
+        search.addView(go, LinearLayout.LayoutParams(dp(46), dp(46)))
+        col.addView(search, lp(MATCH_PARENT, WRAP_CONTENT, top = 24))
+
+        // Quick actions
+        val chips = LinearLayout(this)
+        chips.orientation = LinearLayout.HORIZONTAL
+        val pasteLp = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        pasteLp.marginEnd = dp(10)
+        chips.addView(chip(R.drawable.ic_link, "Paste link") { pasteLink() }, pasteLp)
+        chips.addView(
+            chip(R.drawable.ic_home, "Car home") { dispatch(CarCommand.Home) },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
+        )
+        col.addView(chips, lp(MATCH_PARENT, WRAP_CONTENT, top = 12))
+
+        // Recents
+        col.addView(label("Recently played", 18f, Palette.TEXT, 700), lp(WRAP_CONTENT, WRAP_CONTENT, top = 34))
+        recentsBox = LinearLayout(this)
+        recentsBox.orientation = LinearLayout.VERTICAL
+        col.addView(recentsBox, lp(MATCH_PARENT, WRAP_CONTENT, top = 8))
+
         col.addView(
-            text(
-                "1. Android Auto settings: tap Version about 10 times to unlock developer mode.\n" +
-                    "2. Three-dot menu, Developer settings, turn on Unknown sources.\n" +
-                    "3. Reconnect to the car. AutoTube appears in the app launcher.\n" +
-                    "4. Start your route in Google Maps first, then open AutoTube on the car screen.\n" +
-                    "5. Car buttons: Back and Home control the video side. Arrows scroll the page.",
-                14f, color = "#B8C2CC"
-            )
+            label("Tip: in the YouTube app, tap Share on any video and pick AutoTube.", 13f, Palette.MUTED),
+            lp(MATCH_PARENT, WRAP_CONTENT, top = 26),
         )
 
-        return ScrollView(this).apply {
-            setBackgroundColor(Color.parseColor("#101418"))
-            addView(col)
-        }
+        val scroll = ScrollView(this)
+        scroll.setBackgroundColor(Palette.BG)
+        scroll.isFillViewport = true
+        scroll.addView(col)
+        return scroll
     }
 
-    private fun text(s: String, size: Float, bold: Boolean = false, color: String = "#FFFFFF") =
-        TextView(this).apply {
-            text = s
-            setTextColor(Color.parseColor(color))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
-            if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setLineSpacing(0f, 1.15f)
+    private fun buildPermCard(): View {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.HORIZONTAL
+        card.gravity = Gravity.CENTER_VERTICAL
+        card.background = rounded(Palette.SURFACE, dpf(18f))
+        card.setPadding(dp(16), dp(14), dp(12), dp(14))
+        card.addView(
+            label("Allow location so video can pause while you drive.", 14f, Palette.TEXT),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
+        )
+        val allow = label("Allow", 14f, Color.WHITE, 700)
+        allow.background = pressable(rounded(Palette.ACCENT, dpf(18f)))
+        allow.setPadding(dp(16), dp(9), dp(16), dp(9))
+        allow.isClickable = true
+        allow.setOnClickListener {
+            requestPermissions(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 1,
+            )
         }
-
-    private fun button(label: String, onClick: () -> Unit) =
-        Button(this).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { onClick() }
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(6) }
-        }
-
-    private fun space(h: Int) = android.view.View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(h))
+        val allowLp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+        allowLp.marginStart = dp(12)
+        card.addView(allow, allowLp)
+        return card
     }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
+    private fun chip(icon: Int, text: String, onClick: () -> Unit): View {
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.HORIZONTAL
+        c.gravity = Gravity.CENTER
+        c.background = pressable(rounded(Palette.SURFACE, dpf(22f)))
+        c.setPadding(dp(14), dp(13), dp(14), dp(13))
+        c.isClickable = true
+        c.setOnClickListener { onClick() }
+        val iv = ImageView(this)
+        iv.setImageResource(icon)
+        val ivLp = LinearLayout.LayoutParams(dp(18), dp(18))
+        ivLp.marginEnd = dp(8)
+        c.addView(iv, ivLp)
+        c.addView(label(text, 15f, Palette.TEXT, 600))
+        return c
+    }
+
+    private fun renderRecents() {
+        if (!::recentsBox.isInitialized) return
+        recentsBox.removeAllViews()
+        val items = Library.recents()
+        if (items.isEmpty()) {
+            recentsBox.addView(
+                label("Videos you send to the car show up here.", 14f, Palette.MUTED),
+                lp(MATCH_PARENT, WRAP_CONTENT, top = 6),
+            )
+            return
+        }
+        for (v in items) recentsBox.addView(recentRow(v), lp(MATCH_PARENT, WRAP_CONTENT, top = 4))
+    }
+
+    private fun recentRow(v: Video): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.background = pressable(null, rounded(Color.WHITE, dpf(16f)))
+        row.setPadding(dp(6), dp(6), dp(6), dp(6))
+        row.isClickable = true
+        row.setOnClickListener { dispatch(CarCommand.Play(v.id)) }
+
+        val thumb = ImageView(this)
+        thumb.scaleType = ImageView.ScaleType.CENTER_CROP
+        thumb.background = rounded(Palette.SURFACE, dpf(12f))
+        thumb.clipToRounded()
+        thumb.tag = v.id
+        row.addView(thumb, LinearLayout.LayoutParams(dp(128), dp(72)))
+        Library.thumbnail(v.id) { bmp ->
+            if (bmp != null && thumb.tag == v.id) thumb.setImageBitmap(bmp)
+        }
+
+        val texts = LinearLayout(this)
+        texts.orientation = LinearLayout.VERTICAL
+        texts.setPadding(dp(14), 0, dp(4), 0)
+        val title = label(v.title.ifEmpty { "Loading title…" }, 15f, Palette.TEXT, 600)
+        title.maxLines = 2
+        title.ellipsize = TextUtils.TruncateAt.END
+        texts.addView(title)
+        if (v.channel.isNotEmpty()) {
+            val channel = label(v.channel, 13f, Palette.MUTED)
+            channel.maxLines = 1
+            channel.ellipsize = TextUtils.TruncateAt.END
+            texts.addView(channel, lp(WRAP_CONTENT, WRAP_CONTENT, top = 3))
+        }
+        row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        return row
+    }
+
+    private fun lp(w: Int, h: Int, top: Int = 0): LinearLayout.LayoutParams {
+        val p = LinearLayout.LayoutParams(w, h)
+        p.topMargin = dp(top)
+        return p
+    }
 }

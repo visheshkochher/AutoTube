@@ -11,8 +11,8 @@ android {
         applicationId = "com.vk.autotube"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
     }
 
     // Fixed key, so every new build installs over the previous one.
@@ -43,5 +43,4 @@ android {
 dependencies {
     implementation("androidx.car.app:app:1.4.0")
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("org.maplibre.gl:android-sdk:11.5.2")
 }

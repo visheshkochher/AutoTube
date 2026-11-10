@@ -57,7 +57,7 @@ class MotionGate(
         if (!location.hasSpeed()) return
         val speed = location.speed // metres per second
         val now = SystemClock.elapsedRealtime()
-        if (speed > 250f) {
+        if (speed > 2.5f) {
             slowSince = 0L
             set(true)
         } else if (speed < 1.1f) {

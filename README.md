@@ -1,43 +1,70 @@
-# AutoTube
+# AutoTube 2.0
 
-Personal Android Auto app: YouTube on the left, a live map with Google Maps turn instructions on the right. Sideloaded, not for the Play Store.
+Personal Android Auto app: full-screen YouTube on the car screen, controlled from your phone. Sideloaded, not for the Play Store.
 
-## How it works
+## What it does
 
-- Android Auto only gives one navigation app the big pane, so AutoTube registers as a navigation app and draws its own split screen there.
-- Left: the YouTube mobile site in a WebView. Tap the car screen to control it. Car buttons: Back, Home, page up, page down.
-- Right: an OpenStreetMap map (MapLibre, no API key) following your GPS, with Google Maps' current turn, street and ETA read from its navigation notification.
-- Google Maps keeps routing and speaking guidance on your phone in the background.
-- Driving lock: above about 9 km/h the video is covered and only audio plays. It comes back after about 3 seconds stopped.
+- **Car home screen:** your recently played videos as a grid of thumbnails. Tap one to play it.
+- **Full-screen player:** the video fills the whole car screen. Tap once for large controls: back, rewind 10 s, play/pause, forward 10 s, a seek bar and a Skip ad button. The controls hide after 4 seconds.
+- **Browse:** search results from your phone open on the car as the YouTube mobile site, in dark mode. Tap a video and it goes full screen.
+- **Phone app:** search box, Paste link, Car home, and your recent videos. In the YouTube app you can also tap Share and pick AutoTube.
+- **Driving lock:** above about 9 km/h the screen shows "Paused for driving" and only audio plays. The video comes back about 3 seconds after you stop.
 
-## Build the APK (no Android Studio needed)
+Version 2.0 removed the map and the Google Maps turn info, so AutoTube no longer needs notification access.
 
-1. Create an empty GitHub repository and push this folder to `main`.
-2. GitHub Actions builds it. Open the repo's **Releases** page on your phone and download `AutoTube.apk`.
-3. Every push makes a new release that installs over the previous one (fixed signing key).
+## Install or update (clean reinstall)
 
-Or open the folder in Android Studio and press Run.
+You need a Mac with Google's platform-tools folder, and the phone's USB cable.
 
-## Phone setup
+1. **Get the new APK.** Open your AutoTube repo on GitHub, then Releases, and download `AutoTube.apk` from the newest build.
+2. **Put two files in your platform-tools folder:** `AutoTube.apk` and `install.sh`. Replace any older copies.
+3. **Plug in the phone and unlock it.** USB debugging must be on (Settings > System > Developer options).
+4. **Open Terminal in that folder and run:**
+   ```
+   bash install.sh
+   ```
+5. **When the phone asks, tap Install.** If Play Protect warns you, tap More details, then Install anyway.
+6. **Wait for "Done"**, then unplug and connect to the car.
+7. **If AutoTube isn't in the car's app list:** on the phone, open Android Auto settings > Customize launcher and tick AutoTube.
 
-1. Install `AutoTube.apk` (allow installs from your browser when asked).
-2. Open AutoTube, tap **Allow location** and **Allow Google Maps turn info** (turn on AutoTube in Notification access).
+The script removes the old version, installs the new one so Android Auto accepts it, grants location, opens the app once and restarts Android Auto. It deletes the APK from the phone's Downloads at the end.
 
-## Android Auto setup
+**Run the script again** whenever you install a new build, or if AutoTube disappears from the car after an Android Auto update.
 
-1. Android Auto settings: tap **Version** about 10 times to unlock developer mode.
-2. Three-dot menu, **Developer settings**, turn on **Unknown sources**.
-3. Reconnect to the car. AutoTube shows up in the launcher.
-4. Start a route in Google Maps, then open AutoTube on the car screen.
+## Updating the code on GitHub
 
-## Sending videos
+1. Unzip the new version.
+2. In your repo, delete the old `app` folder, then copy in everything from the zip (`app`, `.github`, `build.gradle.kts`, `settings.gradle.kts`, `gradle.properties`, `install.sh`, `README.md`). Deleting the old `app` folder matters: leftover 1.0 files will break the build.
+3. Commit and push to `main`. GitHub Actions builds the APK in a few minutes and publishes it under Releases.
+4. If the build fails, open the failed run under Actions, copy the red error lines and send them to Claude.
 
-- In the YouTube app: Share, then AutoTube.
-- Or type a search in AutoTube on the phone and tap **Play on car**.
-- Google sign-in is usually blocked inside WebViews, so YouTube runs signed out.
+## If the script can't be used: manual steps
+
+Run these in the platform-tools folder, one at a time:
+
+```
+./adb uninstall com.vk.autotube
+./adb push AutoTube.apk /sdcard/Download/AutoTube.apk
+./adb shell "content query --uri content://media/external/file --projection _id --where \"_display_name='AutoTube.apk'\""
+```
+
+The last command prints something like `_id=1234`. Use that number here:
+
+```
+./adb shell am start -a android.intent.action.INSTALL_PACKAGE -t application/vnd.android.package-archive -d content://media/external/file/1234 --grant-read-uri-permission --es android.intent.extra.INSTALLER_PACKAGE_NAME com.android.vending --ez android.intent.extra.NOT_UNKNOWN_SOURCE true
+```
+
+Tap Install on the phone, then:
+
+```
+./adb shell pm grant com.vk.autotube android.permission.ACCESS_FINE_LOCATION
+./adb shell am start -n com.vk.autotube/.MainActivity
+./adb shell am force-stop com.google.android.projection.gearhead
+```
 
 ## Known limits
 
-- If Android Auto stops Google Maps' route when AutoTube opens, the turn card will say so. Fallback: keep Maps in the big pane and use AutoTube only when parked.
-- The map shows your position, not the Maps route line.
-- Moving detection uses phone GPS, so it can lag a second or two in tunnels.
+- YouTube runs signed out. Google blocks sign-in inside embedded browsers.
+- The car can't show a keyboard, so search from the phone.
+- The full-screen view works by hiding the rest of the YouTube mobile page. If YouTube changes its site, the page can show through. Tell Claude and it can be adjusted.
+- Moving detection uses the phone's GPS, so it can lag a second or two in tunnels.

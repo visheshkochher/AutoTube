@@ -1,57 +1,45 @@
 package com.vk.autotube
 
-import android.content.Context
-import android.content.SharedPreferences
-import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 
-/** One turn instruction mirrored from Google Maps' navigation notification. */
-data class NavInfo(
-    val title: String?,
-    val text: String?,
-    val sub: String?,
-    val icon: Drawable?,
-)
+/** What the phone asks the car screen to do. */
+sealed class CarCommand {
+    object Home : CarCommand()
+    data class Play(val videoId: String) : CarCommand()
+    data class Browse(val url: String) : CarCommand()
+}
 
 /**
- * Shared state between the phone screen, the notification listener and the car screen.
- * Everything runs in one app process, so a simple singleton is enough.
+ * Link between the phone screen and the car screen.
+ * Both run in the same app process, so a simple singleton is enough.
  */
 object Bridge {
-    const val HOME = "https://m.youtube.com/"
+    const val YT_HOME = "https://m.youtube.com/"
 
     private val main = Handler(Looper.getMainLooper())
-    private var prefs: SharedPreferences? = null
 
-    var url: String = HOME
-        private set
-    var nav: NavInfo? = null
+    /** Last state of the car screen, so it can resume after a reconnect. */
+    var last: CarCommand = CarCommand.Home
         private set
 
-    var onUrl: ((String) -> Unit)? = null
-    var onNav: ((NavInfo?) -> Unit)? = null
+    /** Last search or page opened, for the car's Browse button. */
+    var lastBrowse: String? = null
+        private set
 
-    fun init(ctx: Context) {
-        if (prefs != null) return
-        val p = ctx.applicationContext.getSharedPreferences("autotube", Context.MODE_PRIVATE)
-        prefs = p
-        url = p.getString("url", HOME) ?: HOME
-    }
+    var listener: ((CarCommand) -> Unit)? = null
 
-    fun open(ctx: Context, newUrl: String) {
-        init(ctx)
-        url = newUrl
-        prefs?.edit()?.putString("url", newUrl)?.apply()
-        main.post { onUrl?.invoke(newUrl) }
-    }
-
-    fun postNav(info: NavInfo?) {
+    fun send(cmd: CarCommand) {
         main.post {
-            nav = info
-            onNav?.invoke(info)
+            remember(cmd)
+            listener?.invoke(cmd)
         }
+    }
+
+    fun remember(cmd: CarCommand) {
+        last = cmd
+        if (cmd is CarCommand.Browse) lastBrowse = cmd.url
     }
 
     private val urlRegex = Regex("""https?://\S+""")
@@ -63,19 +51,33 @@ object Bridge {
         Regex("""/embed/([\w-]{11})"""),
     )
 
-    /** Turns a shared link, a pasted link, or plain search words into a mobile YouTube URL. */
-    fun youtubeUrlFrom(input: String): String {
-        val trimmed = input.trim()
-        val link = urlRegex.find(trimmed)?.value
-        if (link != null && link.contains("youtu")) {
-            for (p in idPatterns) {
-                val id = p.find(link)?.groupValues?.get(1)
-                if (id != null) return "https://m.youtube.com/watch?v=$id"
-            }
-            return link.replace(Regex("""https?://(www\.|music\.)?youtube\.com"""), "https://m.youtube.com")
+    fun videoIdFrom(text: String): String? {
+        for (p in idPatterns) {
+            val m = p.find(text)
+            if (m != null) return m.groupValues[1]
         }
-        if (link != null) return link
-        if (trimmed.isEmpty()) return HOME
-        return "https://m.youtube.com/results?search_query=" + Uri.encode(trimmed)
+        return null
     }
+
+    /** Turns a shared link, a pasted link, or plain search words into a command. */
+    fun parse(input: String): CarCommand {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) return CarCommand.Browse(YT_HOME)
+        val link = urlRegex.find(trimmed)?.value
+        if (link != null) {
+            if (link.contains("youtu")) {
+                val id = videoIdFrom(link)
+                if (id != null) return CarCommand.Play(id)
+                return CarCommand.Browse(
+                    link.replace(Regex("""https?://(www\.|music\.)?youtube\.com"""), "https://m.youtube.com")
+                )
+            }
+            return CarCommand.Browse(link)
+        }
+        return CarCommand.Browse(searchUrl(trimmed))
+    }
+
+    fun searchUrl(query: String) = "https://m.youtube.com/results?search_query=" + Uri.encode(query)
+
+    fun watchUrl(id: String) = "https://m.youtube.com/watch?v=$id"
 }
