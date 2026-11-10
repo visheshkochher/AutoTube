@@ -43,6 +43,16 @@ class CarRenderer(private val carContext: CarContext) : DefaultLifecycleObserver
         Bridge.listener = null
     }
 
+    // Another app (for example Google Maps) took over the car screen.
+    override fun onStop(owner: LifecycleOwner) {
+        ui?.pauseForBackground()
+    }
+
+    // AutoTube is back on the car screen.
+    override fun onStart(owner: LifecycleOwner) {
+        ui?.resumeFromBackground()
+    }
+
     override fun onSurfaceAvailable(surfaceContainer: SurfaceContainer) {
         release()
         val surface = surfaceContainer.surface ?: return
@@ -115,6 +125,8 @@ class CarRenderer(private val carContext: CarContext) : DefaultLifecycleObserver
 
     private fun release() {
         motion.stop()
+        // Keep the playback position, so the video resumes where it was.
+        ui?.saveResumePoint()
         ui?.destroy()
         ui = null
         try {

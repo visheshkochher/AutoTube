@@ -5,7 +5,10 @@ Personal Android Auto app: full-screen YouTube on the car screen, controlled fro
 ## What it does
 
 - **Car home screen:** your recently played videos as a grid of thumbnails. Tap one to play it.
-- **Full-screen player:** the video fills the whole car screen. Tap once for large controls: back, rewind 10 s, play/pause, forward 10 s, a seek bar and a Skip ad button. The controls hide after 4 seconds.
+- **Full-screen player:** the video fills the whole car screen. Tap once for large controls: back, rewind 10 s, play/pause, forward 10 s and a seek bar (tap or drag it, or drag sideways anywhere on the video). The controls hide after 4 seconds.
+- **Skip ad:** a floating button appears bottom right as soon as YouTube allows skipping, even when the controls are hidden.
+- **Start times:** links with a start time (`?t=95`, `&t=1m30s`) open at that point.
+- **Background:** if you open Google Maps or another app on the car screen, AutoTube pauses. When you come back, it carries on from the same spot.
 - **Browse:** search results from your phone open on the car as the YouTube mobile site, in dark mode. Tap a video and it goes full screen.
 - **Phone app:** search box, Paste link, Car home, and your recent videos. In the YouTube app you can also tap Share and pick AutoTube.
 - **Driving lock:** above about 9 km/h the screen shows "Paused for driving" and only audio plays. The video comes back about 3 seconds after you stop.

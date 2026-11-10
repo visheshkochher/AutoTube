@@ -86,6 +86,13 @@ class CarUi(
     private var pageTitle: String? = null
     private var insets = Rect()
 
+    // Playback position, seeking and resume
+    private var lastTime = 0.0
+    private var pendingStart = 0
+    private var scrubTarget: Double? = null
+    private var seekHoldUntil = 0L
+    private var pausedForBackground = false
+
     // Home
     private val homeScroll = ScrollView(ctx)
     private val homeContent = LinearLayout(ctx)
@@ -109,6 +116,7 @@ class CarUi(
     private val timeText = ctx.label("0:00", 13f, Palette.TEXT, 600)
     private val durationText = ctx.label("", 13f, Palette.MUTED, 500)
     private val adChip = ctx.label("Ad", 13f, Color.BLACK, 700)
+    private val skipAd = LinearLayout(ctx)
 
     // Driving
     private val drivingCover = LinearLayout(ctx)
@@ -141,6 +149,14 @@ class CarUi(
         if (!paused && !loading) hideControls()
     }
 
+    private val commitScrub = Runnable {
+        val t = scrubTarget
+        if (t != null) {
+            scrubTarget = null
+            seekAbs(t)
+        }
+    }
+
     private val poll = object : Runnable {
         override fun run() {
             if (destroyed || mode != Mode.WATCH) return
@@ -170,23 +186,59 @@ class CarUi(
     fun handle(cmd: CarCommand) {
         when (cmd) {
             is CarCommand.Home -> goHome()
-            is CarCommand.Play -> play(cmd.videoId)
+            is CarCommand.Play -> play(cmd.videoId, cmd.start)
             is CarCommand.Browse -> browse(cmd.url)
         }
     }
 
-    fun play(id: String) {
+    fun play(id: String, start: Int = 0) {
         if (destroyed) return
         watchOrigin = if (mode == Mode.HOME) Mode.HOME else Mode.WEB
         currentId = id
         pageTitle = null
-        Bridge.remember(CarCommand.Play(id))
+        pausedForBackground = false
+        Bridge.remember(CarCommand.Play(id, start))
         Library.add(ctx, id)
         exitFullscreen()
         resetPlayer()
+        pendingStart = start
+        lastTime = start.toDouble()
         updateTitle()
-        web.loadUrl(Bridge.watchUrl(id))
+        web.loadUrl(Bridge.watchUrl(id, start))
         setMode(Mode.WATCH)
+    }
+
+    /** Remembers where the video is, so it resumes there when AutoTube comes back. */
+    fun saveResumePoint() {
+        val id = currentId ?: return
+        if (destroyed || mode != Mode.WATCH) return
+        val at = if (pendingStart > 0) pendingStart else lastTime.toInt()
+        Bridge.remember(CarCommand.Play(id, max(0, at - 2)))
+    }
+
+    /** Another app (like Google Maps) took the car screen: pause and step aside. */
+    fun pauseForBackground() {
+        if (destroyed || mode != Mode.WATCH) return
+        saveResumePoint()
+        if (!paused) {
+            pausedForBackground = true
+            paused = true
+            setPausedIcon()
+            js("window.__at.pause()")
+        }
+        abandonAudioFocus()
+    }
+
+    /** AutoTube is back on the car screen: carry on if we paused it. */
+    fun resumeFromBackground() {
+        if (destroyed || !pausedForBackground) return
+        pausedForBackground = false
+        if (mode != Mode.WATCH) return
+        paused = false
+        setPausedIcon()
+        requestAudioFocus()
+        js("window.__at.play()")
+        showControls()
     }
 
     fun browse(url: String) {
@@ -244,8 +296,32 @@ class CarUi(
                 val d = ctx.resources.displayMetrics.density
                 js("window.scrollBy(${(dx / d).roundToInt()}, ${(dy / d).roundToInt()})")
             }
-            Mode.WATCH -> {}
+            Mode.WATCH -> scrub(dx)
         }
+    }
+
+    /** Sideways drag on the video scrubs through it, like dragging the red bar. */
+    private fun scrub(dx: Float) {
+        if (loading || duration <= 0.0) return
+        showControls()
+        val width = max(1, seekBar.width)
+        val base = scrubTarget ?: lastTime
+        val target = (base - dx.toDouble() / width * duration).coerceIn(0.0, duration)
+        scrubTarget = target
+        seekBar.progress = (target / duration).toFloat()
+        timeText.text = formatTime(target)
+        handler.removeCallbacks(commitScrub)
+        handler.postDelayed(commitScrub, 350)
+    }
+
+    private fun seekAbs(seconds: Double) {
+        val t = if (duration > 0.0) seconds.coerceIn(0.0, duration) else max(0.0, seconds)
+        lastTime = t
+        seekHoldUntil = SystemClock.uptimeMillis() + 1500
+        if (duration > 0.0) seekBar.progress = (t / duration).toFloat()
+        timeText.text = formatTime(t)
+        js("window.__at.seekAbs($t)")
+        scheduleHide()
     }
 
     /** A tap on the car screen becomes a real touch on whatever is under it. */
@@ -315,7 +391,10 @@ class CarUi(
         } else {
             abandonAudioFocus()
             hideControlsNow()
+            skipAd.visibility = View.GONE
             handler.removeCallbacks(poll)
+            handler.removeCallbacks(commitScrub)
+            scrubTarget = null
         }
         inject()
         updateDriving()
@@ -678,23 +757,18 @@ class CarUi(
         bottom.orientation = LinearLayout.VERTICAL
         bottom.setPadding(ctx.dp(28), 0, ctx.dp(28), ctx.dp(22))
 
-        adChip.background = pressable(rounded(Color.parseColor("#FFD23F"), ctx.dpf(14f)))
-        adChip.setPadding(ctx.dp(12), ctx.dp(6), ctx.dp(12), ctx.dp(6))
+        adChip.background = rounded(Color.parseColor("#FFD23F"), ctx.dpf(12f))
+        adChip.setPadding(ctx.dp(10), ctx.dp(4), ctx.dp(10), ctx.dp(4))
         adChip.visibility = View.GONE
-        adChip.isClickable = true
-        adChip.setOnClickListener {
-            js("window.__at.skip()")
-            scheduleHide()
-        }
         val adLp = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        adLp.bottomMargin = ctx.dp(10)
+        adLp.bottomMargin = ctx.dp(4)
         bottom.addView(adChip, adLp)
 
+        // Tall touch area (56dp) around a thin bar, so taps and drags land easily.
         seekBar.onSeek = { f ->
-            js("window.__at.seekTo($f)")
-            scheduleHide()
+            if (duration > 0.0) seekAbs(f * duration)
         }
-        bottom.addView(seekBar, LinearLayout.LayoutParams(MATCH_PARENT, ctx.dp(30)))
+        bottom.addView(seekBar, LinearLayout.LayoutParams(MATCH_PARENT, ctx.dp(56)))
 
         val times = LinearLayout(ctx)
         times.orientation = LinearLayout.HORIZONTAL
@@ -705,6 +779,27 @@ class CarUi(
 
         controls.addView(bottom, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
         root.addView(controls, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+
+        // Skip ad floats on its own, so it shows even while the controls are hidden.
+        skipAd.orientation = LinearLayout.HORIZONTAL
+        skipAd.gravity = Gravity.CENTER_VERTICAL
+        skipAd.background = pressable(rounded(Color.argb(225, 20, 22, 26), ctx.dpf(28f)))
+        skipAd.setPadding(ctx.dp(22), ctx.dp(14), ctx.dp(18), ctx.dp(14))
+        skipAd.isClickable = true
+        skipAd.visibility = View.GONE
+        skipAd.setOnClickListener {
+            js("window.__at.skip()")
+            skipAd.visibility = View.GONE
+        }
+        skipAd.addView(ctx.label("Skip ad", 17f, Palette.TEXT, 700))
+        val skipIcon = ImageView(ctx)
+        skipIcon.setImageResource(R.drawable.ic_forward)
+        val skipIconLp = LinearLayout.LayoutParams(ctx.dp(22), ctx.dp(22))
+        skipIconLp.marginStart = ctx.dp(8)
+        skipAd.addView(skipIcon, skipIconLp)
+        val skipLp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.END)
+        skipLp.setMargins(0, 0, ctx.dp(28), ctx.dp(120))
+        root.addView(skipAd, skipLp)
     }
 
     private fun circleButton(
@@ -776,7 +871,8 @@ class CarUi(
     }
 
     private fun seek(seconds: Int) {
-        js("window.__at.seek($seconds)")
+        if (loading) return
+        seekAbs((scrubTarget ?: lastTime) + seconds)
     }
 
     private fun setPausedIcon() {
@@ -793,6 +889,12 @@ class CarUi(
         timeText.text = "0:00"
         durationText.text = ""
         adChip.visibility = View.GONE
+        skipAd.visibility = View.GONE
+        lastTime = 0.0
+        pendingStart = 0
+        scrubTarget = null
+        seekHoldUntil = 0L
+        handler.removeCallbacks(commitScrub)
         spinner.visibility = View.VISIBLE
         playButton.visibility = View.INVISIBLE
         setPausedIcon()
@@ -820,12 +922,25 @@ class CarUi(
             if (!ok) return
 
             duration = d
-            seekBar.progress = if (d > 0.0) (t / d).toFloat() else 0f
-            timeText.text = formatTime(t)
             durationText.text = if (d > 0.0) formatTime(d) else ""
 
-            adChip.visibility = if (ad || skippable) View.VISIBLE else View.GONE
-            adChip.text = if (skippable) "Skip ad" else "Ad"
+            // Start time from the link (?t=...), applied once the real video (not an ad) is ready.
+            if (pendingStart > 0 && !loading && !ad && d > pendingStart) {
+                val target = pendingStart.toDouble()
+                pendingStart = 0
+                if (kotlin.math.abs(t - target) > 3.0) seekAbs(target)
+            }
+
+            // Don't let the 500 ms poll fight a seek the user just made.
+            val holding = scrubTarget != null || seekBar.dragging || SystemClock.uptimeMillis() < seekHoldUntil
+            if (!holding) {
+                if (!ad) lastTime = t
+                seekBar.progress = if (d > 0.0) (t / d).toFloat() else 0f
+                timeText.text = formatTime(t)
+            }
+
+            adChip.visibility = if (ad) View.VISIBLE else View.GONE
+            skipAd.visibility = if (skippable && mode == Mode.WATCH && !moving) View.VISIBLE else View.GONE
 
             if (p != paused) {
                 paused = p
@@ -891,6 +1006,7 @@ class CarUi(
 
     private fun updateDriving() {
         drivingCover.visibility = if (moving) View.VISIBLE else View.GONE
+        if (moving) skipAd.visibility = View.GONE
         drivingPlay.visibility = if (mode == Mode.WATCH) View.VISIBLE else View.GONE
     }
 
@@ -942,8 +1058,48 @@ class CarUi(
     }
     if (v.volume === 0) v.volume = 1;
   }
+  function player() {
+    return document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+  }
+  function isAd() {
+    var mp = player();
+    if (mp && mp.classList && (mp.classList.contains('ad-showing') || mp.classList.contains('ad-interrupting'))) return true;
+    return !!document.querySelector('.ytp-ad-player-overlay, .ytp-ad-player-overlay-layout, .ytp-ad-module .ytp-ad-text');
+  }
+  // The skip button only exists in the page once YouTube allows skipping.
+  // Our CSS makes it invisible, but it still has a size, which is what we check.
   function skipButton() {
-    return document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot button');
+    var list = document.querySelectorAll(
+      '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, ' +
+      '.ytp-ad-skip-button-slot button, .ytp-ad-skip-button-container button, ' +
+      'button[class*="skip-ad"], button[class*="ad-skip"], button[id^="skip-button"], ' +
+      '[id^="skip-button"] button, button[aria-label^="Skip"]');
+    for (var i = 0; i < list.length; i++) {
+      var b = list[i];
+      if (b.disabled) continue;
+      var cs = getComputedStyle(b);
+      if (cs.display === 'none' || b.offsetWidth === 0 || b.offsetHeight === 0) continue;
+      return b;
+    }
+    return null;
+  }
+  function press(el) {
+    var opts = { bubbles: true, cancelable: true, view: window };
+    try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (e) {}
+    try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (e) {}
+    try { el.click(); } catch (e) {}
+  }
+  // Seek through YouTube's own player when it's there; it handles buffering better.
+  function seekAbs(t) {
+    var v = vid();
+    if (!v) return;
+    t = Math.max(0, t);
+    if (isFinite(v.duration) && v.duration > 0) t = Math.min(t, v.duration - 0.5);
+    var mp = player();
+    try { if (mp && mp.seekTo && !isAd()) { mp.seekTo(t, true); return; } } catch (e) {}
+    v.currentTime = t;
   }
 
   window.__at = {
@@ -964,23 +1120,31 @@ class CarUi(
     state: function() {
       var v = vid();
       if (!v) return JSON.stringify({ ok: false });
-      var player = document.querySelector('.html5-video-player');
-      var ad = !!(player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting')));
       return JSON.stringify({
         ok: true,
         t: v.currentTime || 0,
         d: isFinite(v.duration) ? v.duration : 0,
         p: v.paused,
-        ad: ad,
+        ad: isAd(),
         sk: !!skipButton(),
         title: document.title
       });
     },
     toggle: function() { var v = vid(); if (!v) return; if (v.paused) { unmute(v); v.play(); } else { v.pause(); } },
+    play: function() { var v = vid(); if (!v) return; unmute(v); var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); },
     pause: function() { var v = vid(); if (v) v.pause(); },
-    seek: function(s) { var v = vid(); if (v) v.currentTime = Math.max(0, (v.currentTime || 0) + s); },
-    seekTo: function(f) { var v = vid(); if (v && isFinite(v.duration)) v.currentTime = f * v.duration; },
-    skip: function() { var b = skipButton(); if (b) b.click(); }
+    seekAbs: function(t) { seekAbs(t); },
+    // Press YouTube's skip button. If YouTube ignores the scripted press,
+    // jump to the end of the (skippable) ad, which ends it the same way.
+    skip: function() {
+      var b = skipButton();
+      if (!b) return;
+      press(b);
+      setTimeout(function() {
+        var v = vid();
+        if (v && isAd() && skipButton() && isFinite(v.duration) && v.duration > 0) v.currentTime = v.duration;
+      }, 600);
+    }
   };
   setInterval(function(){ window.__at.apply(); }, 500);
 })();

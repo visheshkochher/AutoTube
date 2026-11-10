@@ -11,8 +11,8 @@ android {
         applicationId = "com.vk.autotube"
         minSdk = 28
         targetSdk = 35
-        versionCode = 3
-        versionName = "2.1"
+        versionCode = 4
+        versionName = "2.2"
     }
 
     // Fixed key, so every new build installs over the previous one.

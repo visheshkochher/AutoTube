@@ -8,7 +8,10 @@ import android.view.MotionEvent
 import android.view.View
 import com.vk.autotube.Palette
 
-/** Thin progress bar with a knob. Tap anywhere on it to jump there. */
+/**
+ * Progress bar with a knob. Tap anywhere on it to jump there, or drag the knob.
+ * The view is taller than the bar it draws, so it's easy to hit on a car screen.
+ */
 class SeekBarView(ctx: Context) : View(ctx) {
 
     var progress = 0f
@@ -17,13 +20,17 @@ class SeekBarView(ctx: Context) : View(ctx) {
             invalidate()
         }
 
+    /** True while a finger is on the bar; outside updates should wait. */
+    var dragging = false
+        private set
+
     var onSeek: ((Float) -> Unit)? = null
 
     private val density = ctx.resources.displayMetrics.density
-    private val trackHeight = 4f * density
-    private val knobRadius = 7f * density
+    private val trackHeight = 5f * density
+    private val knobRadius = 9f * density
 
-    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 255, 255, 255) }
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 255, 255, 255) }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.ACCENT }
     private val knobPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
 
@@ -37,20 +44,37 @@ class SeekBarView(ctx: Context) : View(ctx) {
         val x = left + (right - left) * progress
         canvas.drawRoundRect(left, cy - half, right, cy + half, half, half, trackPaint)
         canvas.drawRoundRect(left, cy - half, x, cy + half, half, half, fillPaint)
-        canvas.drawCircle(x, cy, knobRadius, knobPaint)
+        canvas.drawCircle(x, cy, if (dragging) knobRadius * 1.3f else knobRadius, knobPaint)
+    }
+
+    private fun fractionAt(x: Float): Float {
+        val span = width - 2f * knobRadius
+        if (span <= 0f) return progress
+        return ((x - knobRadius) / span).coerceIn(0f, 1f)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> return true
+            MotionEvent.ACTION_DOWN -> {
+                dragging = true
+                parent?.requestDisallowInterceptTouchEvent(true)
+                progress = fractionAt(event.x)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                progress = fractionAt(event.x)
+                return true
+            }
             MotionEvent.ACTION_UP -> {
-                val span = width - 2f * knobRadius
-                if (span > 0f) {
-                    val f = ((event.x - knobRadius) / span).coerceIn(0f, 1f)
-                    progress = f
-                    onSeek?.invoke(f)
-                }
+                progress = fractionAt(event.x)
+                dragging = false
+                onSeek?.invoke(progress)
                 performClick()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                dragging = false
+                invalidate()
                 return true
             }
         }

@@ -7,7 +7,7 @@ import android.os.Looper
 /** What the phone asks the car screen to do. */
 sealed class CarCommand {
     object Home : CarCommand()
-    data class Play(val videoId: String) : CarCommand()
+    data class Play(val videoId: String, val start: Int = 0) : CarCommand()
     data class Browse(val url: String) : CarCommand()
 }
 
@@ -67,7 +67,7 @@ object Bridge {
         if (link != null) {
             if (link.contains("youtu")) {
                 val id = videoIdFrom(link)
-                if (id != null) return CarCommand.Play(id)
+                if (id != null) return CarCommand.Play(id, startFrom(link))
                 return CarCommand.Browse(
                     link.replace(Regex("""https?://(www\.|music\.)?youtube\.com"""), "https://m.youtube.com")
                 )
@@ -77,7 +77,27 @@ object Bridge {
         return CarCommand.Browse(searchUrl(trimmed))
     }
 
+    private val startRegex = Regex("""[?&#](?:t|start|time_continue)=([0-9hms]+)""")
+    private val unitRegex = Regex("""(\d+)([hms])""")
+
+    /** Start time in seconds from links like ?t=90, &t=90s, ?t=1m30s, &start=90. */
+    fun startFrom(link: String): Int {
+        val raw = startRegex.find(link)?.groupValues?.get(1) ?: return 0
+        if (raw.all { it.isDigit() }) return raw.toIntOrNull() ?: 0
+        var total = 0
+        for (m in unitRegex.findAll(raw)) {
+            val n = m.groupValues[1].toIntOrNull() ?: 0
+            total += when (m.groupValues[2]) {
+                "h" -> n * 3600
+                "m" -> n * 60
+                else -> n
+            }
+        }
+        return total
+    }
+
     fun searchUrl(query: String) = "https://m.youtube.com/results?search_query=" + Uri.encode(query)
 
-    fun watchUrl(id: String) = "https://m.youtube.com/watch?v=$id"
+    fun watchUrl(id: String, start: Int = 0) =
+        if (start > 0) "https://m.youtube.com/watch?v=$id&t=${start}s" else "https://m.youtube.com/watch?v=$id"
 }
